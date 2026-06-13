@@ -1,0 +1,10 @@
+.env
+.venv/
+cache/
+__pycache__/
+*.pyc
+.~lock.*
+.gstack/
+CLAUDE.md
+SESSION_PLAN.md
+*.patch
