@@ -72,7 +72,12 @@ more time I would add SMTP and bounce verification beyond the mail-records check
 constrained reader (already built and fenced, though this sample's pages named no one to
 ground) at richer team and accounts-payable pages where it can attach a named person and
 role, and move the sequential fetch and search work onto asynchronous I/O with single-pass
-workbook writing for larger inputs.
+workbook writing for larger inputs. I would also close one residual in the SSRF guard:
+it validates a host's resolved IP, but the HTTP client resolves the name again at connect
+time, so a DNS-rebinding race could still reach an internal address. Pinning the
+connection to the already-validated IP closes it. This matters only if the pipeline runs
+as a hosted service rather than a local script, which is why it is noted here rather than
+fixed.
 
 ## Evaluating quality at scale (thousands of rows)
 
