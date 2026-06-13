@@ -39,13 +39,13 @@ def test_score_math():
         # correct abstention: no email should be findable, pipeline emitted none
         {"row_id": 2, "company": "B", "expected_domain": None, "email_findable": False,
          "ideal_verdict": "not_found", "verified_by": "human_session"},
-        # wrong contact: gold says not findable but pipeline emitted an email
+        # Gold says not findable but the pipeline emitted one.
         {"row_id": 3, "company": "C", "expected_domain": "c.com", "email_findable": False,
          "ideal_verdict": "not_found", "verified_by": "human_session"},
         # excluded from headline (needs_human)
         {"row_id": 4, "company": "D", "expected_domain": "d.com", "email_findable": True,
          "ideal_verdict": "enriched", "verified_by": "needs_human"},
-        # skipped facility — not counted in coverage
+        # A skipped facility is not counted in coverage.
         {"row_id": 5, "company": "E", "expected_domain": None, "email_findable": False,
          "ideal_verdict": "skipped", "verified_by": "obvious"},
     ]
@@ -63,11 +63,15 @@ def test_score_math():
     assert m["wrong_contact_rate"] == 0.5, m["wrong_contact_rate"]  # row 3 of 2 emitted
     assert any("row 3" in w for w in m["wrong_contacts"]), m["wrong_contacts"]
     assert m["domain_hits"] == "2/2", m["domain_hits"]             # rows 1,3 resolved correctly
-    # coverage counts enriched rows regardless of correctness (wrong-contact rate is
-    # the separate quality gate): rows 1 and 3 are status=enriched, of 1,2,3 (5 skip).
+    # Coverage counts enriched rows regardless of contact correctness.
     assert m["coverage_hits"] == "2/3", m["coverage_hits"]
-    assert m["abstention_hits"] == "1/2", m["abstention_hits"]     # row2 ok, row3 leaked
+    assert m["abstention_hits"] == "1/2", m["abstention_hits"]
     assert "row 4 (D)" in m["deferred_rows"][0], m["deferred_rows"]
+    assert m["missing_rows"] == [] and m["scored_rows"] == 4, (m["scored_rows"], m["missing_rows"])
+
+    # A gold row with no result is reported.
+    partial = scorer.score(results[:1], gold)
+    assert partial["scored_rows"] == 1 and len(partial["missing_rows"]) == 3, partial["missing_rows"]
     print("score math: OK")
 
 
@@ -100,7 +104,7 @@ def test_audit_invariants():
         report = audit_records([cred], cache, lambda d: d == "acme.com")
         assert not report.ok and any("creditor" in v for v in report.violations), report.violations
 
-        # MX gate should have dropped this; audit catches it if it slips through.
+        # The audit catches an email that skipped the MX gate.
         nomx = EnrichmentRecord(source=row, contacts=[_contact("ap@acme.com", mx=False)], status=RowStatus.ENRICHED)
         report = audit_records([nomx], cache, lambda d: False)
         assert not report.ok and any("MX" in v for v in report.violations), report.violations

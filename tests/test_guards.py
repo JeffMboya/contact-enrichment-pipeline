@@ -41,8 +41,7 @@ def test_ssrf_url_filter():
     assert not web.is_public_url("http://10.0.0.5/internal")
     assert not web.is_public_url("file:///etc/passwd")
     assert not web.is_public_url("ftp://example.com/")
-    # A real dual-stack host (public v4 + NAT64 v6) must NOT be blocked — the
-    # regression that wrongly rejected is_reserved addresses killed real fetches.
+    # A public dual-stack host with a NAT64 address must pass.
     assert web.is_public_url("https://www.concordhospital.org/")
     print("ssrf url filter: OK")
 
@@ -101,6 +100,18 @@ def test_mx_transient_not_cached():
             assert cache.get("mx", "transient.example") is None
         finally:
             dns.resolver.resolve = orig
+
+        # No MX but an A record is still deliverable.
+        def no_mx_has_a(domain, rdtype, *a, **k):
+            if rdtype == "MX":
+                raise dns.resolver.NoAnswer()
+            return ["93.184.216.34"]
+
+        dns.resolver.resolve = no_mx_has_a
+        try:
+            assert contact_finder._mx_valid(cache, "implicit-mx.example") is True
+        finally:
+            dns.resolver.resolve = orig
     print("mx transient caching: OK")
 
 
@@ -124,7 +135,7 @@ def test_anti_hallucination_gate():
         cfg = Config("stub", "stub", Path("x"), Path("y"), Path(tmp), 6, ("fedex.com",))
         resolution.serper_search = lambda c, k, q, num=5: HITS
 
-        # Invented domain not in the chosen URL → rejected, no domain leaks.
+        # A domain not in the chosen URL is rejected.
         invented = _LLM({"result_index": 1, "domain": "totally-invented.com",
                          "reasoning": "x", "confidence": 0.9})
         res = resolution.resolve(PARSED, ROW, cache, cfg, invented, SearchBudget(6))
@@ -145,8 +156,7 @@ def test_anti_hallucination_gate():
 
 
 def test_directory_filter():
-    # A directory must never become the resolved company domain, even when its
-    # listing is the only confident result.
+    # A directory must never become the resolved company domain.
     with tempfile.TemporaryDirectory() as tmp:
         cache = Cache(Path(tmp))
         cfg = Config("stub", "stub", Path("x"), Path("y"), Path(tmp), 6, ("fedex.com",))
@@ -155,7 +165,7 @@ def test_directory_filter():
              "link": "https://www.yelp.com/biz/zumpano-enterprises"},
         ]}
         resolution.serper_search = lambda c, k, q, num=5: directory_hits
-        # The judge would happily pick it, but it is filtered before the judge.
+        # Directories are filtered out before the judge sees them.
         llm = _LLM({"result_index": 1, "domain": "yelp.com", "reasoning": "listed",
                     "confidence": 0.9})
         res = resolution.resolve(PARSED, ROW, cache, cfg, llm, SearchBudget(6))
@@ -166,9 +176,7 @@ def test_directory_filter():
 
 
 def test_followup_query_escalation():
-    # A judge that can't pick a result may propose ONE refined query (grounded
-    # in what the results said); the loop runs it instead of giving up. The
-    # final domain must still come from a result URL.
+    # A grounded follow-up query is searched before giving up.
     with tempfile.TemporaryDirectory() as tmp:
         cache = Cache(Path(tmp))
         cfg = Config("stub", "stub", Path("x"), Path("y"), Path(tmp), 6, ("fedex.com",))
@@ -203,10 +211,7 @@ def test_followup_query_escalation():
 
 
 def test_current_name_must_be_grounded():
-    # current_name lets an acquired company pass the name/domain affinity check
-    # (L M SCOFIELD -> usa.sika.com), but ONLY if that name appears verbatim in
-    # the search results the judge saw. A current_name from the model's own
-    # knowledge must not unlock the gate.
+    # A current_name unlocks affinity only if grounded in the results.
     with tempfile.TemporaryDirectory() as tmp:
         cache = Cache(Path(tmp))
         cfg = Config("stub", "stub", Path("x"), Path("y"), Path(tmp), 6, ("fedex.com",))
@@ -223,14 +228,14 @@ def test_current_name_must_be_grounded():
                    "reasoning": "acquired brand", "confidence": 0.8,
                    "current_name": "Sika Corporation"}
 
-        # Grounded: the results themselves mention Sika Corporation -> accepted.
+        # Results mention Sika Corporation, so it is accepted.
         resolution.serper_search = lambda c, k, q, num=5: hits(
             "L.M. Scofield is now part of Sika Corporation.")
         res = resolution.resolve(parsed, row, cache, cfg, _LLM(verdict), SearchBudget(6))
         assert res.domain == "usa.sika.com", res
         assert res.legal_name == "Sika Corporation", res.legal_name
 
-        # Ungrounded: results never say "Sika Corporation" -> affinity rejects.
+        # Results never say Sika Corporation, so affinity rejects.
         resolution.serper_search = lambda c, k, q, num=5: hits(
             "Decorative concrete products since 1915.")
         res = resolution.resolve(parsed, row, cache, cfg, _LLM(verdict), SearchBudget(6))
@@ -239,9 +244,7 @@ def test_current_name_must_be_grounded():
 
 
 def test_reader_anti_hallucination():
-    # The constrained stage-3 reader may annotate regex-extracted emails with a
-    # name/role, but it can NEVER introduce a new address, and a name it reports
-    # must appear in the fetched page text or it is dropped.
+    # The reader never introduces an address or an ungrounded name.
     page = ("Contact us. For accounts payable, reach Jane Smith at jane@acme.com. "
             "General enquiries: info@acme.com.")
     a = Contact("jane@acme.com", None, None, ContactType.GENERIC,
@@ -299,8 +302,7 @@ def test_creditor_port_bypass():
 
 
 def test_creditor_autodetect_and_exclusion():
-    # Generality: when the input carries a creditor column, the creditor is
-    # detected and excluded by name-affinity — not just the env-configured domain.
+    # A creditor named in the input column is excluded.
     from pipeline.ingestion import detect_creditor_names
 
     rows = [
@@ -315,7 +317,7 @@ def test_creditor_autodetect_and_exclusion():
     assert resolution.is_creditor_domain("acmecollections.com", cfg), "name-affinity exclusion failed"
     assert not resolution.is_creditor_domain("debtorco.com", cfg)
 
-    # The env-domain layer still works on its own (the sample's path: no column).
+    # The env domain list still works on its own.
     env_only = Config("stub", "stub", Path("x"), Path("y"), Path("z"), 6, ("fedex.com",))
     assert resolution.is_creditor_domain("fedex.com", env_only)
     assert not resolution.is_creditor_domain("acme.com", env_only)
@@ -359,8 +361,7 @@ def test_partial_run_output_alignment():
             ws.append([f"Person {i}", f"{i} St  City TX 75001 USA", f"CO {i}", "", f"+1 55{i}"])
         wb.save(fixture)
         rows = __import__("pipeline.ingestion", fromlist=["load_rows"]).load_rows(fixture)
-        # Only process row_id 3 (a --rows 3 partial run): must not raise, and the
-        # enrichment must land directly under source row 3, not row 2.
+        # A single-row run inserts under its own source row.
         rec = EnrichmentRecord(
             source=rows[2],
             parsed=Parsed("CO 3", None, None, FullNameType.PERSON, Tier.MEDIUM, []),
@@ -370,7 +371,7 @@ def test_partial_run_output_alignment():
             status=RowStatus.ENRICHED)
         output.write_output([rec], fixture, out)
         sheet = openpyxl.load_workbook(out).active
-        # Source row 3 is sheet row 4; enrichment inserted at row 5.
+        # Source row 3 is sheet row 4.
         assert sheet.cell(4, 3).value == "CO 3", "source row 3 misplaced"
         assert sheet.cell(5, 4).value == "ap@co3.com", "enrichment not under source row 3"
         assert sheet.cell(5, 1).fill.fgColor.rgb.endswith("FFF2CC")
@@ -378,19 +379,24 @@ def test_partial_run_output_alignment():
 
 
 def main() -> None:
-    test_ssrf_classification()
-    test_ssrf_url_filter()
-    test_mx_transient_not_cached()
-    test_anti_hallucination_gate()
-    test_directory_filter()
-    test_followup_query_escalation()
-    test_current_name_must_be_grounded()
-    test_reader_anti_hallucination()
-    test_query_suggestions_validated()
-    test_creditor_port_bypass()
-    test_creditor_autodetect_and_exclusion()
-    test_formula_injection_neutralized()
-    test_partial_run_output_alignment()
+    # Restore serper_search so it is not left patched.
+    _orig_serper = resolution.serper_search
+    try:
+        test_ssrf_classification()
+        test_ssrf_url_filter()
+        test_mx_transient_not_cached()
+        test_anti_hallucination_gate()
+        test_directory_filter()
+        test_followup_query_escalation()
+        test_current_name_must_be_grounded()
+        test_reader_anti_hallucination()
+        test_query_suggestions_validated()
+        test_creditor_port_bypass()
+        test_creditor_autodetect_and_exclusion()
+        test_formula_injection_neutralized()
+        test_partial_run_output_alignment()
+    finally:
+        resolution.serper_search = _orig_serper
     print("\nAll guard tests passed.")
 
 

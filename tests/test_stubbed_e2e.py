@@ -93,7 +93,7 @@ class FakeLLM:
                  "role": "accounts payable", "department": "Finance"},
                 {"email": "info@duvalmotors.com", "name": "", "role": "general",
                  "department": ""},
-                # An address NOT in the extracted set must be ignored, not added.
+                # An address outside the extracted set is ignored.
                 {"email": "ghost@duvalmotors.com", "name": "Phantom", "role": "", "department": ""},
             ]}
         if "result_index" in props:
@@ -106,7 +106,11 @@ class FakeLLM:
 
 
 def main() -> None:
-    # Patch the external boundaries only.
+    # Patch the external boundaries, then restore them afterward.
+    _orig = (
+        resolution.serper_search, contact_finder.serper_search,
+        contact_finder.fetch_page, contact_finder._mx_valid,
+    )
     resolution.serper_search = stub_serper
     contact_finder.serper_search = stub_serper
     contact_finder.fetch_page = stub_fetch
@@ -114,50 +118,53 @@ def main() -> None:
 
     import run as runner
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        fixture = tmp_path / "fixture.xlsx"
-        out = tmp_path / "enriched.xlsx"
-        make_fixture(fixture)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fixture = tmp_path / "fixture.xlsx"
+            out = tmp_path / "enriched.xlsx"
+            make_fixture(fixture)
 
-        cfg = Config(
-            serper_api_key="stub", anthropic_api_key="stub",
-            input_file=fixture, output_file=out,
-            cache_dir=tmp_path / "cache", max_serper_calls_per_row=6,
-            creditor_domains=("fedex.com",),
-        )
-        cfg.cache_dir.mkdir(parents=True, exist_ok=True)
-        cache = Cache(cfg.cache_dir)
-        llm = FakeLLM()
+            cfg = Config(
+                serper_api_key="stub", anthropic_api_key="stub",
+                input_file=fixture, output_file=out,
+                cache_dir=tmp_path / "cache", max_serper_calls_per_row=6,
+                creditor_domains=("fedex.com",),
+            )
+            cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+            cache = Cache(cfg.cache_dir)
+            llm = FakeLLM()
 
-        rows = ingestion.load_rows(fixture)
-        records = [runner._process(row, cache, cfg, llm) for row in rows]
+            rows = ingestion.load_rows(fixture)
+            records = [runner._process(row, cache, cfg, llm) for row in rows]
 
-        duval = records[0]
-        assert duval.status == RowStatus.ENRICHED, duval.status
-        assert duval.resolution.domain == "duvalmotors.com", duval.resolution
-        assert duval.contacts and duval.contacts[0].email == "ap@duvalmotors.com", duval.contacts
-        assert duval.contacts[0].confidence >= 0.70, duval.contacts[0].confidence
-        assert all("fedex.com" not in (c.email or "") for c in duval.contacts), \
-            "creditor mailbox leaked into contacts"
-        # The reader named a "ghost@" address not in the regex-extracted set; it must
-        # never reach a contact (anti-hallucination holds through the LLM reader).
-        assert all((c.email or "") != "ghost@duvalmotors.com" for c in duval.contacts), \
-            "reader introduced an email that was not extracted from the page"
+            duval = records[0]
+            assert duval.status == RowStatus.ENRICHED, duval.status
+            assert duval.resolution.domain == "duvalmotors.com", duval.resolution
+            assert duval.contacts and duval.contacts[0].email == "ap@duvalmotors.com", duval.contacts
+            assert duval.contacts[0].confidence >= 0.70, duval.contacts[0].confidence
+            assert all("fedex.com" not in (c.email or "") for c in duval.contacts), \
+                "creditor mailbox leaked into contacts"
+            # A reader-named address must never reach a contact.
+            assert all((c.email or "") != "ghost@duvalmotors.com" for c in duval.contacts), \
+                "reader introduced an email that was not extracted from the page"
 
-        fedex = records[1]
-        assert fedex.status == RowStatus.SKIPPED, fedex.status
+            fedex = records[1]
+            assert fedex.status == RowStatus.SKIPPED, fedex.status
 
-        acme = records[2]
-        assert acme.status == RowStatus.PARTIAL, acme.status
-        assert acme.contacts and acme.contacts[0].type.value == "form_only", acme.contacts
-        assert acme.contacts[0].email is None
-        assert "contact form" in acme.not_found_explanation, acme.not_found_explanation
+            acme = records[2]
+            assert acme.status == RowStatus.PARTIAL, acme.status
+            assert acme.contacts and acme.contacts[0].type.value == "form_only", acme.contacts
+            assert acme.contacts[0].email is None
+            assert "contact form" in acme.not_found_explanation, acme.not_found_explanation
 
-        output.write_output(records, fixture, out)
-        sheet = openpyxl.load_workbook(out).active
-        email_col = HEADERS.index("Email") + 1
-        assert sheet.cell(3, email_col).value == "ap@duvalmotors.com"
+            output.write_output(records, fixture, out)
+            sheet = openpyxl.load_workbook(out).active
+            email_col = HEADERS.index("Email") + 1
+            assert sheet.cell(3, email_col).value == "ap@duvalmotors.com"
+    finally:
+        (resolution.serper_search, contact_finder.serper_search,
+         contact_finder.fetch_page, contact_finder._mx_valid) = _orig
 
     print("stubbed e2e: OK")
 

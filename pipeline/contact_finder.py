@@ -90,8 +90,14 @@ def _domain_match(email_domain: str, resolved: str | None) -> str:
     return "mismatch"
 
 
-def extract_emails(html: str) -> list[dict]:
-    text = _deobfuscate(BeautifulSoup(html, "lxml").get_text(" "))
+def page_text(html: str) -> str:
+    """The de-obfuscated visible text of a page."""
+    return _deobfuscate(BeautifulSoup(html, "lxml").get_text(" "))
+
+
+def extract_emails(html: str, text: str | None = None) -> list[dict]:
+    if text is None:
+        text = page_text(html)
     raw = _deobfuscate(html)
     found: dict[str, dict] = {}
     for source in (text, raw):
@@ -121,8 +127,16 @@ def _mx_valid(cache: Cache, email_domain: str) -> bool:
 
     try:
         result = bool(dns.resolver.resolve(email_domain, "MX"))
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers):
-        result = False  # These DNS errors definitively mean no mail records.
+    except dns.resolver.NoAnswer:
+        # An A record alone still accepts mail (implicit MX).
+        try:
+            result = bool(dns.resolver.resolve(email_domain, "A"))
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers):
+            result = False
+        except Exception:
+            return False  # A transient A-lookup failure is not cached.
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
+        result = False
     except Exception:
         # A transient DNS failure must not be cached.
         return False
@@ -192,7 +206,7 @@ _READER_SYSTEM = (
     "the page ties that address to that function."
 )
 
-_AP_ROLE_HINTS = ("payable", "billing", "accounts", "finance", "remit", "invoic")
+_AP_ROLE_HINTS = ("payable", "billing", "remittance", "remit", "invoic", "finance")
 
 # A title or function is not a usable person name.
 _NAME_NONWORDS = {
@@ -211,22 +225,22 @@ def _name_grounded(name: str, text: str) -> bool:
     tokens = [t for t in re.sub(r"[^a-z ]", " ", name.lower()).split() if len(t) >= 2]
     if len(tokens) < 2 or any(t in _NAME_NONWORDS for t in tokens):
         return False
-    return all(t in haystack for t in tokens if len(t) >= 3)
+    return all(t in haystack for t in tokens)
 
 
 def _annotate_contacts(
-    contacts: dict[str, Contact], page_text: str, llm: LLM, model: str = HAIKU
+    contacts: dict[str, Contact], text: str, llm: LLM, model: str = HAIKU
 ) -> None:
     """Attach grounded name/role to regex-extracted email contacts, in place.
     Best-effort: any failure leaves the deterministic contacts untouched."""
     emails = [e for e, c in contacts.items() if c.email]
-    if not emails or not page_text.strip():
+    if not emails or not text.strip():
         return
     user = (
         "Extracted email addresses (the only addresses you may reference):\n"
         + "\n".join(f"- {e}" for e in emails)
         + "\n\nPage text:\n"
-        + page_text[:6000]
+        + text[:6000]
     )
     try:
         result = llm.json(model, _READER_SYSTEM, user, _READER_SCHEMA)
@@ -239,12 +253,12 @@ def _annotate_contacts(
         if contact is None or contact.email is None:
             continue  # Ignore any address the regex did not extract.
         name = (ann.get("name") or "").strip()
-        if name and _name_grounded(name, page_text):
+        if name and _name_grounded(name, text):
             contact.name = name
             if contact.type == ContactType.GENERIC:
                 contact.type = ContactType.NAMED_PERSON
         role = (ann.get("role") or "").lower()
-        if any(hint in role for hint in _AP_ROLE_HINTS):
+        if "receivable" not in role and any(hint in role for hint in _AP_ROLE_HINTS):
             contact.role = ROLE_ACCOUNTS_PAYABLE
 
 
@@ -290,11 +304,12 @@ def find_contacts(
         if page.get("status") != 200 or not page.get("html"):
             continue
         fetched += 1
-        page_emails = extract_emails(page["html"])
+        text = page_text(page["html"])
+        page_emails = extract_emails(page["html"], text=text)
         if not page_emails and "<form" in page["html"].lower():
             form_pages.append(url)
         if page_emails:
-            email_page_text.append(_deobfuscate(BeautifulSoup(page["html"], "lxml").get_text(" ")))
+            email_page_text.append(text)
         for item in page_emails:
             email = item["email"]
             if email in contacts:

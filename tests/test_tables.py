@@ -72,9 +72,7 @@ EMAIL_TYPE_CASES = [
     ("sales", ContactType.GENERIC),
     ("office", ContactType.GENERIC),
     ("jane.doe", ContactType.NAMED_PERSON),
-    # NAMED_PERSON needs positive evidence; a bare word could be a person or a
-    # functional mailbox (answers@, charter@), so it stays GENERIC unless the
-    # invoice contact's name corroborates it.
+    # A bare word stays generic without name corroboration.
     ("jsmith", ContactType.GENERIC),
     ("answers", ContactType.GENERIC),
     ("charter", ContactType.GENERIC),
@@ -133,7 +131,7 @@ SKIP_FETCH_CASES = [
     ("https://acme.com/contact", False),
 ]
 
-# (clean_name, domain) -> domain plausibly belongs to the company?
+# Each case asks whether the domain fits the company.
 AFFINITY_CASES = [
     (("DATA FINANCIAL", "datafinancial.com"), True),
     (("BOUMIL LAW OFFICES", "boumil-law.com"), True),
@@ -162,7 +160,7 @@ def _scoring_fixtures():
     return row, parsed, resolved, ambiguous
 
 
-# (label, contact, resolution_key, lo, hi) — bands, not brittle exact decimals
+# Each case asserts a score band, not an exact decimal.
 SCORING_CASES = [
     ("ap role on-domain", _contact("ap@acme.com", "exact", ContactType.ROLE_SPECIFIC,
                                    role="accounts payable"), "resolved", 0.75, 0.90),

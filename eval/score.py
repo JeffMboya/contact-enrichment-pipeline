@@ -63,11 +63,13 @@ def score(results: list[dict], gold: list[dict]) -> dict:
     abst_total = abst_ok = 0
     cov_total = cov_hit = 0
     wrong_rows: list[str] = []
+    missing_rows: list[str] = []
 
     for g in trusted:
         rid = g["row_id"]
         rec = by_id.get(rid)
         if rec is None:
+            missing_rows.append(f"row {rid} ({g['company']})")
             continue
         status = rec.get("status")
         email = _emitted_email(rec)
@@ -100,6 +102,8 @@ def score(results: list[dict], gold: list[dict]) -> dict:
 
     return {
         "trusted_rows": len(trusted),
+        "scored_rows": len(trusted) - len(missing_rows),
+        "missing_rows": missing_rows,
         "deferred_rows": [f"row {g['row_id']} ({g['company']})" for g in deferred],
         "wrong_contact_rate": pct(wrong, emitted),
         "wrong_contacts": wrong_rows,
@@ -120,12 +124,18 @@ def format_report(m: dict) -> str:
     lines = [
         "Evaluation vs gold set",
         "=" * 52,
-        f"  Trusted rows scored      : {m['trusted_rows']}",
+        f"  Trusted rows scored      : {m['scored_rows']} of {m['trusted_rows']}",
         f"  Wrong-contact rate       : {show(m['wrong_contact_rate'])}  ({m['emails_emitted']} emails emitted)",
         f"  Domain accuracy          : {show(m['domain_accuracy'])}  ({m['domain_hits']})",
         f"  Coverage (enriched)      : {show(m['coverage'])}  ({m['coverage_hits']})",
         f"  Correct abstention       : {show(m['correct_abstention'])}  ({m['abstention_hits']})",
     ]
+    if m["missing_rows"]:
+        lines.append(
+            f"  WARNING: {len(m['missing_rows'])} gold row(s) absent from results "
+            f"(partial run?), excluded from the metrics above: "
+            + ", ".join(m["missing_rows"])
+        )
     if m["wrong_contacts"]:
         lines.append("  WRONG CONTACTS:")
         lines += [f"    - {w}" for w in m["wrong_contacts"]]

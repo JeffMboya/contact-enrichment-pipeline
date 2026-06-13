@@ -119,8 +119,19 @@ def main() -> None:
             "Creditor(s) detected from input, excluded from enrichment: "
             + ", ".join(cfg.creditor_names)
         )
-    row_ids = {int(x) for x in args.rows.split(",")} if args.rows else None
+    row_ids = None
+    if args.rows:
+        try:
+            row_ids = {int(x) for x in args.rows.split(",") if x.strip()}
+        except ValueError:
+            raise SystemExit(f"--rows must be comma-separated integers, got: {args.rows!r}")
     selected = _select(rows, args.limit, row_ids)
+
+    # Partial runs write to a side file, not the deliverable.
+    output_path = cfg.output_file
+    if args.rows or args.limit is not None:
+        output_path = output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
+        print(f"Partial run: writing to {output_path}, leaving {cfg.output_file} untouched.")
 
     cache = Cache(cfg.cache_dir)
     llm = LLM(cache)
@@ -146,7 +157,7 @@ def main() -> None:
             f"conf={top:.2f} {record.source.company_name[:40]}"
         )
 
-    write_output(records, cfg.input_file, cfg.output_file)
+    write_output(records, cfg.input_file, output_path)
 
     counts = {s: 0 for s in ("enriched", "partial", "skipped", "not_found")}
     for record in records:
@@ -154,7 +165,7 @@ def main() -> None:
     print(
         f"\nDone: {counts['enriched']} enriched, {counts['partial']} partial, "
         f"{counts['skipped']} skipped, {counts['not_found']} not found. "
-        f"Output: {cfg.output_file}"
+        f"Output: {output_path}"
     )
 
     # A failed invariant exits non-zero so it cannot ship.

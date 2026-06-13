@@ -158,26 +158,21 @@ def name_domain_affinity(clean_name: str, domain: str) -> bool:
     (VETERINARY SPECIALTIES -> twcinc.com) is the judge picking an unrelated
     site; reject it rather than emit a wrong contact.
     """
-    labels = [
-        re.sub(r"[^a-z0-9]", "", label.lower())
-        for label in (domain or "").split(".")[:-1]  # This keeps every label except the TLD.
-    ]
-    labels = [label for label in labels if label]
-    if not labels:
+    parts = [re.sub(r"[^a-z0-9]", "", part.lower()) for part in (domain or "").split(".")]
+    parts = [part for part in parts if part]
+    if len(parts) < 2:
         return False
+    label = parts[-2]  # This is the registrable domain's main label.
     tokens = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in clean_name.split()]
     tokens = [t for t in tokens if t]
     sig = [t for t in tokens if len(t) >= 3 and t not in _STOP_TOKENS] or tokens
     joined = "".join(tokens)
+    if any(t in label for t in sig if len(t) >= 4):
+        return True
+    if len(label) >= 4 and label in joined:
+        return True
     acronym = "".join(t[0] for t in sig)
-    for label in labels:
-        if any(t in label for t in sig if len(t) >= 4):
-            return True
-        if len(label) >= 4 and label in joined:
-            return True
-        if len(acronym) >= 2 and acronym == label:
-            return True
-    return False
+    return len(acronym) >= 2 and acronym == label
 
 
 def is_creditor_domain(domain: str, cfg: Config) -> bool:
